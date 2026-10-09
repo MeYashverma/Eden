@@ -419,7 +419,8 @@ label.field .value { color: var(--accent); font-family: var(--mono); font-size: 
 
 /* ---------- panels (inventory, map, stats, settings...) ------------------ */
 
-.panel-root { position: absolute; inset: 0; pointer-events: none; z-index: 40; }
+/* Above the main menu (60) so panels opened from the menu are clickable. */
+.panel-root { position: absolute; inset: 0; pointer-events: none; z-index: 70; }
 .panel {
   position: absolute;
   top: 50%;

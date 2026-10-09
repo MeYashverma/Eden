@@ -183,11 +183,13 @@ export function buildWaterGeometry(
       const x = ox + ix * step;
       const z = oz + iz * step;
       const t = gen.height(x, z);
-      const s = hydro.surfaceAt(x, z);
+      // Flat per-cell level: a vertex is wet only where the ground lies below
+      // the level, and its surface stays at that level (never above it).
+      const level = hydro.levelAt(x, z);
       const vi = iz * n + ix;
-      if (s !== null && s > t - 0.5) {
-        surfaces[vi] = Math.max(s, t + 0.05);
-        depths[vi] = Math.max(0, surfaces[vi] - t);
+      if (level !== null && level > t + 0.05) {
+        surfaces[vi] = level;
+        depths[vi] = level - t;
         flows[vi] = gen.riverMask(x, z);
         if (depths[vi] > 0.05) wet++;
       } else {
@@ -273,6 +275,17 @@ export class ChunkManager {
     this.hydro = hydro;
     this.opts = opts;
     this.group.name = 'terrain';
+  }
+
+  /** Apply a new streaming radius (metres). Takes effect on the next update. */
+  setViewDistance(distance: number): void {
+    if (this.opts.viewDistance === distance) return;
+    this.opts.viewDistance = distance;
+    this.centerCx = Number.NaN; // force the next update() to re-evaluate the set
+  }
+
+  get viewDistance(): number {
+    return this.opts.viewDistance;
   }
 
   setMaterials(terrainMaterial: THREE.Material, waterMaterial: THREE.Material): void {

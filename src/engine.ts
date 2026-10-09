@@ -41,9 +41,16 @@ import { WEATHER_LABEL } from './world/weather';
 import { formatNumber, formatClock, clamp, lerp, TAU } from './core/math';
 import { RNG } from './core/rng';
 
+/** Hydrology iterations run after a world is built or restored (matches boot). */
+const HYDRO_WARM_ITERATIONS = 240;
+
 export interface EngineStatus {
   ready: boolean;
   message: string;
+}
+
+function slugify(name: string): string {
+  return name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'eden';
 }
 
 export class Engine {
@@ -151,7 +158,7 @@ export class Engine {
 
     onProgress(52, 'Filling rivers and lakes…');
     // Hydrology warmup yields to the loader so progress stays honest.
-    await this.warmHydro(240, (p) => onProgress(52 + p * 12, 'Filling rivers and lakes…'));
+    await this.warmHydro(HYDRO_WARM_ITERATIONS, (p) => onProgress(52 + p * 12, 'Filling rivers and lakes…'));
 
     onProgress(68, 'Growing forests…');
     await this.prebuildChunks(96, (p) => onProgress(68 + p * 14, 'Shaping nearby land…'));
@@ -213,14 +220,28 @@ export class Engine {
     this.composer?.setSize(w, h);
   };
 
+  /**
+   * Release everything owned by the current world (terrain meshes, vegetation,
+   * lights, sky, materials, weather particles). Called before a new world is
+   * built so regeneration and loading never stack duplicate scene objects.
+   */
+  private disposeWorld(): void {
+    if (!this.chunks) return;
+    this.scene.remove(this.chunks.group, this.veg.group, this.simulation.group, this.humanRenderer.group);
+    for (const r of this.animalRenderers.values()) this.scene.remove(r.group);
+    this.animalRenderers.clear();
+    this.chunks.dispose();
+    this.veg.dispose();
+    this.atmosphere.dispose();
+    this.terrainMat.dispose();
+    this.waterMat.dispose();
+    this.scene.remove(this.weatherParticles);
+    this.weatherParticles.geometry.dispose();
+    (this.weatherParticles.material as THREE.Material).dispose();
+  }
+
   private buildWorld(config: WorldGenConfig, fresh: boolean): void {
-    // Dispose previous world if regenerating.
-    if (this.chunks) {
-      this.scene.remove(this.chunks.group, this.veg.group, this.simulation.group, this.humanRenderer.group);
-      for (const r of this.animalRenderers.values()) this.scene.remove(r.group);
-      this.animalRenderers.clear();
-      this.chunks.dispose();
-    }
+    this.disposeWorld();
 
     this.gen = new WorldGen(config);
     this.hydro = new Hydrology(this.gen);
@@ -293,6 +314,11 @@ export class Engine {
     this.scene.add(this.weatherParticles);
   }
 
+  /** Synchronous hydrology warm-up used when a world is created or restored. */
+  private warmHydroNow(iterations: number): void {
+    this.hydro.warmup(iterations);
+  }
+
   private async warmHydro(iterations: number, onProgress: (p: number) => void): Promise<void> {
     const slice = 24;
     for (let i = 0; i < iterations; i += slice) {
@@ -307,10 +333,6 @@ export class Engine {
     let built = 0;
     while (this.chunks.pendingBuilds > 0 && built < count) {
       built += this.chunks.processQueue(12);
-      const vegChunk = Math.min(built, 24);
-      for (let i = 0; i < vegChunk; i++) {
-        // grow vegetation for the nearest built chunks
-      }
       onProgress(Math.min(1, built / count));
       await new Promise((r) => setTimeout(r, 0));
     }
@@ -334,9 +356,9 @@ export class Engine {
       onContinue: () => void this.continueWorld(),
       onLoadSlot: (id) => void this.loadSlot(id),
       onDeleteSlot: (id) => void this.deleteSlot(id),
-      onRenameSlot: () => {},
+      onRenameSlot: (id, name) => void this.renameSlot(id, name),
       onSaveNow: (name) => void this.saveWorld(name),
-      onExportWorld: () => void this.exportWorld(),
+      onExportWorld: (slotId) => void this.exportWorld(slotId),
       onImportWorld: (file) => void this.importWorld(file),
       onSetSpeed: (speed) => this.setSpeed(speed),
       onSetCamera: (mode) => this.setCameraMode(mode),
@@ -344,23 +366,33 @@ export class Engine {
       onSettingChange: (key, value) => this.applySetting(key, value),
       onGodAction: (action, value) => this.godAction(action, value),
       onResume: () => this.resumeGame(),
-      onRegenerate: () => {},
       onResetWorld: () => void this.resetWorld(),
       onShowPanel: (name) => this.openNamedPanel(name),
       onClosePanel: () => {
         this.paused = false;
         this.input.uiFocused = false;
       },
+      onMenuChange: (visible) => this.handleMenuChange(visible),
       onMapWaypoint: (x, z) => {
         this.waypoints.push({ x, z, label: `Waypoint ${this.waypoints.length + 1}` });
         this.ui.toast('Waypoint placed.', 'info');
       },
       onTrackEntity: (kind, id) => this.trackEntity(kind, id),
-      onInteract: () => {},
       onAudioUnlock: () => void this.audio.unlock(),
     };
     this.ui = new UIManager(callbacks, this.settings);
     return this.ui;
+  }
+
+  /**
+   * Single place where menu visibility changes game state. The UI reports every
+   * transition, so the engine never has to wrap or monkey-patch UI methods.
+   */
+  private handleMenuChange(visible: boolean): void {
+    this.inMenu = visible;
+    this.paused = visible;
+    if (this.input) this.input.uiFocused = visible;
+    if (!visible) this.canvas.focus();
   }
 
   // ------------------------------------------------------------ game start
@@ -371,7 +403,7 @@ export class Engine {
     this.worldName = cfg.name;
     this.playSeconds = 0;
     this.buildWorld(config, true);
-    void this.warmHydro(160, () => {});
+    this.warmHydroNow(HYDRO_WARM_ITERATIONS);
     this.chunks.update(this.player.position.x, this.player.position.z, true);
     this.chunks.processQueue(200);
     for (let dz = -2; dz <= 2; dz++) {
@@ -391,7 +423,6 @@ export class Engine {
         this.input.requestPointerLock();
       });
     }
-    this.paused = false;
   }
 
   private async continueWorld(): Promise<void> {
@@ -508,6 +539,8 @@ export class Engine {
     const cx = Math.floor(this.player.position.x / CHUNK_SIZE);
     const cz = Math.floor(this.player.position.z / CHUNK_SIZE);
     const r = Math.ceil(this.settings.renderDistance / CHUNK_SIZE);
+    // Drop vegetation that has streamed out of range so memory stays bounded.
+    this.veg.pruneFar(cx, cz, r + 2);
     for (let dz = -r; dz <= r; dz++) {
       for (let dx = -r; dx <= r; dx++) {
         if (dx * dx + dz * dz > r * r) continue;
@@ -552,10 +585,12 @@ export class Engine {
 
   private updateAgentRenderers(): void {
     // Humans
-    this.humanRenderer.update(this.simulation.citizens.renderInputs());
+    const humanBudget = Math.max(8, Math.round(80 * this.settings.simulationDensity));
+    this.humanRenderer.update(this.simulation.citizens.renderInputs().slice(0, humanBudget));
 
     // Animals grouped by species
     const inputs = this.simulation.animalRenderInputs(this.player.position.x, this.player.position.z);
+    const budget = Math.max(8, Math.round(48 * this.settings.simulationDensity));
     const seen = new Set<string>();
     for (const [species, list] of Object.entries(inputs)) {
       seen.add(species);
@@ -565,7 +600,7 @@ export class Engine {
         this.animalRenderers.set(species, renderer);
         this.scene.add(renderer.group);
       }
-      renderer.update(list.slice(0, 48) as AnimalRenderInput[]);
+      renderer.update(list.slice(0, budget) as AnimalRenderInput[]);
     }
     for (const [species, renderer] of this.animalRenderers) {
       if (!seen.has(species)) renderer.update([]);
@@ -611,7 +646,7 @@ export class Engine {
 
   private updateTools(dt: number): void {
     const origin = this.camera.position;
-    const dir = this.camera.getWorldDirection(new THREE.Vector3());
+    const dir = this.camera.getWorldDirection(this.aimDir);
     const ctx: ToolContext = {
       gen: this.gen,
       hydro: this.hydro,
@@ -734,6 +769,7 @@ export class Engine {
   }
 
   private clickLatch = false;
+  private aimDir = new THREE.Vector3();
   private hoveredInteraction: import('./player/tools').InteractionCandidate | null = null;
   private inMenu = true;
 
@@ -1048,10 +1084,12 @@ export class Engine {
         break;
       case 'renderDistance':
         this.settings.renderDistance = value as number;
+        this.chunks.setViewDistance(this.settings.renderDistance);
         this.chunks.update(this.player.position.x, this.player.position.z, true);
         break;
       case 'foliage':
         this.settings.foliage = value as number;
+        this.veg.setFoliageScale(this.settings.foliage);
         break;
       case 'postProcessing':
         this.settings.postProcessing = value as boolean;
@@ -1105,8 +1143,6 @@ export class Engine {
       }
       case 'toMainMenu':
         void this.saveWorld(undefined, true).then(() => {
-          this.paused = true;
-          this.input.uiFocused = true;
           this.ui.closePanel();
           this.ui.setMenuVisible(true, this.currentSaveId !== null);
         });
@@ -1143,7 +1179,7 @@ export class Engine {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, p.pixelRatio));
     this.atmosphere.setQuality(p.shadow, preset === 'low' ? 1 : 2.2);
     if (this.chunks) {
-      (this.chunks as unknown as { opts: { viewDistance: number } }).opts.viewDistance = p.renderDistance;
+      this.chunks.setViewDistance(p.renderDistance);
       this.chunks.update(this.player.position.x, this.player.position.z, true);
     }
     this.setupComposer();
@@ -1152,7 +1188,9 @@ export class Engine {
 
   private setupComposer(): void {
     if (!this.settings.postProcessing) {
+      this.composer?.dispose();
       this.composer = null;
+      this.bloomPass = null;
       return;
     }
     if (!this.composer) {
@@ -1256,8 +1294,21 @@ export class Engine {
     };
   }
 
-  async saveWorld(name?: string, silent = false): Promise<boolean> {
+  /**
+   * Save the live world. Writes are serialized: an autosave and a manual save
+   * never interleave, and each one snapshots the state when it actually runs.
+   * Resolves true only when the record has been committed to storage.
+   */
+  saveWorld(name?: string, silent = false): Promise<boolean> {
     if (name) this.worldName = name;
+    const run = (this.saveQueue ?? Promise.resolve(false)).then(() => this.writeSave(silent));
+    this.saveQueue = run.catch(() => false);
+    return run;
+  }
+
+  private saveQueue: Promise<boolean> | null = null;
+
+  private async writeSave(silent: boolean): Promise<boolean> {
     const save = this.buildSave();
     const id = this.currentSaveId ?? `world-${Date.now().toString(36)}`;
     this.currentSaveId = id;
@@ -1281,6 +1332,34 @@ export class Engine {
     return ok;
   }
 
+  /** Live save metadata for the Continue button and the menu. */
+  async listSaves(): Promise<SaveSlotMeta[]> {
+    return this.db.listSlots();
+  }
+
+  async renameSlot(id: string, name: string): Promise<void> {
+    const trimmed = name.trim().slice(0, 40);
+    if (!trimmed) {
+      this.ui.toast('A world needs a name.', 'danger');
+      return;
+    }
+    const slot = await this.db.getSlot(id);
+    if (!slot) {
+      this.ui.toast('That save no longer exists.', 'danger');
+      return;
+    }
+    const { save } = validateSave(slot.data);
+    if (!save) {
+      this.ui.toast('That save is corrupt and cannot be renamed.', 'danger');
+      return;
+    }
+    save.meta.name = trimmed;
+    const ok = await this.db.putSlot({ ...slot, name: trimmed, data: save });
+    if (ok && this.currentSaveId === id) this.worldName = trimmed;
+    this.ui.toast(ok ? `Renamed to ${trimmed}.` : 'Rename failed — storage unavailable.', ok ? 'settlement' : 'danger');
+    await this.refreshSaveSlots();
+  }
+
   async loadSlot(id: string): Promise<void> {
     const slot = await this.db.getSlot(id);
     if (!slot) {
@@ -1296,7 +1375,6 @@ export class Engine {
     this.currentSaveId = id;
     this.ui.setMenuVisible(false);
     this.ui.toast(`Loaded ${save.meta.name}.`, 'settlement');
-    this.paused = false;
   }
 
   private applySave(save: WorldSave): void {
@@ -1325,7 +1403,7 @@ export class Engine {
       .filter((d) => !this.discoveries.some((x) => x.id === d.id));
 
     // Rebuild world view around the player
-    void this.warmHydro(120, () => {});
+    this.warmHydroNow(HYDRO_WARM_ITERATIONS);
     this.chunks.update(this.player.position.x, this.player.position.z, true);
     this.chunks.processQueue(200);
     for (let dz = -2; dz <= 2; dz++) {
@@ -1345,13 +1423,31 @@ export class Engine {
     this.ui.toast('Save deleted.', 'info');
   }
 
-  async exportWorld(): Promise<void> {
+  /**
+   * Export a saved slot (when `slotId` is given, from the gallery) or the live
+   * world (pause menu / no slot). Exporting a slot never reads the live world.
+   */
+  async exportWorld(slotId?: string): Promise<void> {
+    if (slotId) {
+      const slot = await this.db.getSlot(slotId);
+      const { save } = slot ? validateSave(slot.data) : { save: null };
+      if (!save) {
+        this.ui.toast('That save could not be read, so it cannot be exported.', 'danger');
+        return;
+      }
+      downloadFile(`${slugify(save.meta.name)}-eden.json`, buildExportFile(save));
+      this.ui.toast(`Exported ${save.meta.name}.`, 'settlement');
+      return;
+    }
     const save = this.buildSave();
-    const text = buildExportFile(save);
-    downloadFile(`${this.worldName.replace(/\s+/g, '-').toLowerCase()}-eden.json`, text);
+    downloadFile(`${slugify(this.worldName)}-eden.json`, buildExportFile(save));
     this.ui.toast('World exported as JSON.', 'settlement');
   }
 
+  /**
+   * Import a portable save as a NEW slot. The currently loaded slot is never
+   * overwritten: its id is cleared before the import is written.
+   */
   async importWorld(file: File): Promise<void> {
     const text = await file.text();
     const { save, error } = parseExportFile(text);
@@ -1360,10 +1456,14 @@ export class Engine {
       return;
     }
     this.applySave(save);
-    await this.saveWorld(save.meta.name);
+    this.currentSaveId = null;
+    const ok = await this.saveWorld(save.meta.name);
+    if (!ok) {
+      this.ui.toast('Imported, but it could not be stored. Export it again later.', 'danger', 7000);
+      return;
+    }
     this.ui.setMenuVisible(false);
     this.ui.toast(`Imported ${save.meta.name}.`, 'settlement');
-    this.paused = false;
   }
 
   async resetWorld(): Promise<void> {

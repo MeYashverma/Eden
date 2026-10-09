@@ -283,6 +283,19 @@ export class VegetationSystem {
   private leafMats: Map<TreeSpecies, THREE.MeshStandardMaterial> = new Map();
   private materials: THREE.Material[] = [];
   private chunkVegetation = new Map<string, THREE.Group>();
+  /** Chunks whose vegetation has been generated (including empty ones). */
+  private builtKeys = new Set<string>();
+  /**
+   * Geometry and materials shared by every chunk for rocks, bushes and flowers.
+   * Created once per world; per-chunk builds only allocate InstancedMesh objects.
+   */
+  private shared: {
+    rock: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial };
+    bush: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial };
+    flower: { geo: THREE.BufferGeometry; mat: THREE.MeshStandardMaterial };
+  };
+  /** Multiplier on tree and bush counts (the player's foliage setting). */
+  private foliageScale = 1;
   /** Player-planted objects (persisted). */
   planted: PlacedObject[] = [];
   /** Player-removed vegetation keys (persisted). */
@@ -291,6 +304,17 @@ export class VegetationSystem {
 
   constructor(public gen: WorldGen, private leafTexture: THREE.Texture, private barkTexture: THREE.Texture) {
     this.group.name = 'vegetation';
+    const rockGeo = new THREE.IcosahedronGeometry(1, 1);
+    rockGeo.computeVertexNormals();
+    const bushMat = new THREE.MeshStandardMaterial({ color: 0x3d5c2e, roughness: 0.9, flatShading: true });
+    const flowerMat = new THREE.MeshStandardMaterial({ roughness: 0.8, vertexColors: true });
+    this.shared = {
+      rock: { geo: rockGeo, mat: new THREE.MeshStandardMaterial({ color: 0x8a8781, roughness: 0.95, flatShading: true }) },
+      bush: { geo: new THREE.IcosahedronGeometry(0.9, 1), mat: bushMat },
+      flower: { geo: new THREE.ConeGeometry(0.12, 0.32, 5), mat: flowerMat },
+    };
+    applyWind(bushMat, 0.7);
+    this.materials.push(this.shared.rock.mat, bushMat, flowerMat);
     this.prototypes = {
       oak: buildOak(),
       pine: buildPine(),
@@ -391,7 +415,7 @@ export class VegetationSystem {
   generateChunkVegetation(cx: number, cz: number): PlacedObject[] {
     const out: PlacedObject[] = [];
     const cfg = this.gen.config;
-    const forest = cfg.forestDensity;
+    const forest = cfg.forestDensity * this.foliageScale;
 
     // --- trees ---
     const treeCount = Math.floor(46 * forest);
@@ -503,6 +527,7 @@ export class VegetationSystem {
     const key = `${cx},${cz}`;
     if (this.chunkVegetation.has(key)) this.removeChunk(key);
     const objects = this.generateChunkVegetation(cx, cz);
+    this.builtKeys.add(key);
     this.treeCounts.set(key, objects.filter((o) => o.kind === 'tree').length);
     if (objects.length === 0) return;
 
@@ -567,9 +592,7 @@ export class VegetationSystem {
           group.add(leafMesh);
         }
       } else if (kind === 'rock') {
-        const geo = new THREE.IcosahedronGeometry(1, 1);
-        geo.computeVertexNormals();
-        const mat = new THREE.MeshStandardMaterial({ color: 0x8a8781, roughness: 0.95, flatShading: true });
+        const { geo, mat } = this.shared.rock;
         const mesh = new THREE.InstancedMesh(geo, mat, objs.length);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -586,11 +609,9 @@ export class VegetationSystem {
         }
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-        this.materials.push(mat);
         group.add(mesh);
       } else if (kind === 'bush') {
-        const geo = new THREE.IcosahedronGeometry(0.9, 1);
-        const mat = new THREE.MeshStandardMaterial({ color: 0x3d5c2e, roughness: 0.9, flatShading: true });
+        const { geo, mat } = this.shared.bush;
         const mesh = new THREE.InstancedMesh(geo, mat, objs.length);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -607,12 +628,9 @@ export class VegetationSystem {
         }
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-        this.materials.push(mat);
-        applyWind(mat, 0.7);
         group.add(mesh);
       } else if (kind === 'flower') {
-        const geo = new THREE.ConeGeometry(0.12, 0.32, 5);
-        const mat = new THREE.MeshStandardMaterial({ roughness: 0.8, vertexColors: true });
+        const { geo, mat } = this.shared.flower;
         const mesh = new THREE.InstancedMesh(geo, mat, objs.length);
         for (let i = 0; i < objs.length; i++) {
           const o = objs[i];
@@ -627,7 +645,6 @@ export class VegetationSystem {
         }
         mesh.instanceMatrix.needsUpdate = true;
         if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-        this.materials.push(mat);
         group.add(mesh);
       }
     }
@@ -639,17 +656,62 @@ export class VegetationSystem {
   removeChunk(key: string): void {
     const group = this.chunkVegetation.get(key);
     this.treeCounts.delete(key);
+    this.builtKeys.delete(key);
     if (!group) return;
     this.group.remove(group);
+    // Only the per-chunk instance buffers are released. Prototype geometries and
+    // materials are shared by every chunk and must stay alive.
     group.traverse((obj) => {
-      const mesh = obj as THREE.InstancedMesh;
-      if (mesh.geometry) mesh.geometry.dispose();
+      if ((obj as THREE.InstancedMesh).isInstancedMesh) (obj as THREE.InstancedMesh).dispose();
     });
     this.chunkVegetation.delete(key);
   }
 
+  /** Release every chunk and the per-world prototype and material resources. */
+  dispose(): void {
+    for (const key of [...this.builtKeys]) this.removeChunk(key);
+    for (const proto of Object.values(this.prototypes)) {
+      proto.wood.dispose();
+      proto.canopy?.dispose();
+    }
+    for (const m of this.barkMats.values()) m.dispose();
+    for (const m of this.leafMats.values()) m.dispose();
+    for (const m of this.materials) m.dispose();
+    this.shared.rock.geo.dispose();
+    this.shared.bush.geo.dispose();
+    this.shared.flower.geo.dispose();
+    this.barkMats.clear();
+    this.leafMats.clear();
+    this.materials.length = 0;
+    this.group.clear();
+  }
+
+  /** Change foliage density; every built chunk is regenerated on the next sync. */
+  setFoliageScale(scale: number): void {
+    const next = Math.max(0.2, Math.min(2, scale));
+    if (next === this.foliageScale) return;
+    this.foliageScale = next;
+    for (const key of [...this.builtKeys]) this.removeChunk(key);
+  }
+
+  /** Drop vegetation for chunks farther than `maxRadiusChunks` from (cx, cz). */
+  pruneFar(cx: number, cz: number, maxRadiusChunks: number): number {
+    let pruned = 0;
+    const r2 = maxRadiusChunks * maxRadiusChunks;
+    for (const key of [...this.builtKeys]) {
+      const [x, z] = key.split(',').map(Number);
+      const dx = x - cx;
+      const dz = z - cz;
+      if (dx * dx + dz * dz > r2) {
+        this.removeChunk(key);
+        pruned++;
+      }
+    }
+    return pruned;
+  }
+
   hasChunk(key: string): boolean {
-    return this.chunkVegetation.has(key);
+    return this.builtKeys.has(key);
   }
 
   /**

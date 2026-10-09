@@ -97,23 +97,49 @@ export class SaveDatabase {
     });
   }
 
-  async putSlot(slot: SaveSlot): Promise<boolean> {
-    const store = this.tx('readwrite');
-    if (!store) return false;
+  /**
+   * Resolves true only once the transaction has committed. A request can succeed
+   * while the transaction later aborts (e.g. quota exceeded), so the request's
+   * own onsuccess is not a reliable signal.
+   */
+  private write(op: (store: IDBObjectStore) => void): Promise<boolean> {
+    if (!this.db) return Promise.resolve(false);
     return new Promise((resolve) => {
-      const req = store.put(slot);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => resolve(false);
+      let tx: IDBTransaction;
+      try {
+        tx = this.db!.transaction(STORE, 'readwrite');
+      } catch (err) {
+        this.errorMessage = err instanceof Error ? err.message : String(err);
+        resolve(false);
+        return;
+      }
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => {
+        this.errorMessage = tx.error?.message ?? 'Save transaction failed';
+        resolve(false);
+      };
+      tx.onabort = () => {
+        this.errorMessage = tx.error?.name === 'QuotaExceededError' ? 'Storage quota exceeded' : (tx.error?.message ?? 'Save transaction aborted');
+        resolve(false);
+      };
+      try {
+        op(tx.objectStore(STORE));
+      } catch (err) {
+        this.errorMessage = err instanceof Error ? err.message : String(err);
+        try { tx.abort(); } catch { /* already finished */ }
+      }
+    });
+  }
+
+  async putSlot(slot: SaveSlot): Promise<boolean> {
+    return this.write((store) => {
+      store.put(slot);
     });
   }
 
   async deleteSlot(id: string): Promise<boolean> {
-    const store = this.tx('readwrite');
-    if (!store) return false;
-    return new Promise((resolve) => {
-      const req = store.delete(id);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => resolve(false);
+    return this.write((store) => {
+      store.delete(id);
     });
   }
 

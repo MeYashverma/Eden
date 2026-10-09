@@ -221,6 +221,17 @@ export class Hydrology {
     return t + Math.max(0.12, depth);
   }
 
+  /**
+   * Flat water level of the hydrology cell containing (x, z), or null when the
+   * cell is dry. Water bodies have one level per cell; rendering uses it so the
+   * surface never hovers above the ground it is supposed to cover.
+   */
+  levelAt(x: number, z: number): number | null {
+    const cx = this.ox + clamp(Math.round((x - this.ox) / HYDRO_CELL), 0, HYDRO_N - 1) * HYDRO_CELL;
+    const cz = this.oz + clamp(Math.round((z - this.oz) / HYDRO_CELL), 0, HYDRO_N - 1) * HYDRO_CELL;
+    return this.surfaceAt(cx, cz);
+  }
+
   depthAt(x: number, z: number): number {
     const s = this.surfaceAt(x, z);
     if (s === null) return 0;

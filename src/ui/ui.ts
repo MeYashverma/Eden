@@ -45,7 +45,8 @@ export interface UICallbacks {
   onDeleteSlot: (id: string) => void;
   onRenameSlot: (id: string, name: string) => void;
   onSaveNow: (name?: string) => void;
-  onExportWorld: () => void;
+  /** Export a saved slot by id, or the live world when no id is given. */
+  onExportWorld: (slotId?: string) => void;
   onImportWorld: (file: File) => void;
   onSetSpeed: (speed: TimeSpeed) => void;
   onSetCamera: (mode: CameraMode) => void;
@@ -53,13 +54,13 @@ export interface UICallbacks {
   onSettingChange: (key: string, value: unknown) => void;
   onGodAction: (action: string, value?: unknown) => void;
   onResume: () => void;
-  onRegenerate: () => void;
   onResetWorld: () => void;
   onShowPanel: (name: string) => void;
   onClosePanel: () => void;
   onMapWaypoint: (x: number, z: number) => void;
   onTrackEntity: (kind: string, id: string) => void;
-  onInteract: (candidateId: string) => void;
+  /** Called on every menu open/close so the engine can sync game state. */
+  onMenuChange: (visible: boolean) => void;
   onAudioUnlock: () => void;
 }
 
@@ -203,6 +204,7 @@ export class UIManager {
   }
 
   setMenuVisible(visible: boolean, hasSave = false): void {
+    const changed = this.menuVisible !== visible;
     this.menuVisible = visible;
     this.roots.menu.classList.toggle('hidden', !visible);
     this.roots.hud.classList.toggle('hidden', visible);
@@ -210,10 +212,11 @@ export class UIManager {
     if (cont) cont.disabled = !hasSave;
     const sub = document.getElementById('menu-continue-sub');
     if (sub) sub.textContent = hasSave ? 'Resume your latest world' : 'No saved world yet';
-    if (visible) {
-      this.closePanel();
-      document.exitPointerLock?.();
-    }
+    // Any panel belongs to the screen it was opened on: menu panels must not
+    // survive into the game (and vice versa).
+    this.closePanel();
+    if (visible) document.exitPointerLock?.();
+    if (changed) this.cb.onMenuChange(visible);
   }
 
   // ------------------------------------------------------------- HUD
@@ -398,6 +401,10 @@ export class UIManager {
     this.panelBody = null;
   }
 
+  get isMenuVisible(): boolean {
+    return this.menuVisible;
+  }
+
   get isPanelOpen(): boolean {
     return this.activePanel !== null;
   }
@@ -516,7 +523,8 @@ export class UIManager {
           </div>
           <div class="slot-actions">
             <button class="btn btn-sm" data-load="${s.id}">${icon('play', 13)} Load</button>
-            <button class="btn btn-sm" data-export="${s.id}" title="Export">${icon('download', 13)}</button>
+            <button class="btn btn-sm" data-rename="${s.id}" title="Rename">${icon('edit', 13)}</button>
+            <button class="btn btn-sm" data-export="${s.id}" title="Export this world">${icon('download', 13)}</button>
             <button class="btn btn-sm btn-danger" data-delete="${s.id}" title="Delete">${icon('trash', 13)}</button>
           </div>
         </div>`,
@@ -530,12 +538,17 @@ export class UIManager {
       const load = t.closest('[data-load]') as HTMLElement | null;
       const del = t.closest('[data-delete]') as HTMLElement | null;
       const exp = t.closest('[data-export]') as HTMLElement | null;
+      const ren = t.closest('[data-rename]') as HTMLElement | null;
       if (load) {
         this.cb.onLoadSlot(load.dataset.load!);
       } else if (del) {
         if (confirm('Delete this save permanently?')) this.cb.onDeleteSlot(del.dataset.delete!);
       } else if (exp) {
-        this.cb.onExportWorld();
+        this.cb.onExportWorld(exp.dataset.export!);
+      } else if (ren) {
+        const current = (ren.closest('.slot-card')?.querySelector('.slot-name')?.textContent ?? '').trim();
+        const next = window.prompt('Rename this world', current);
+        if (next !== null) this.cb.onRenameSlot(ren.dataset.rename!, next);
       }
     });
     panel.querySelector('[data-cancel]')?.addEventListener('click', () => this.closePanel());
@@ -901,7 +914,7 @@ export class UIManager {
       if (!row) return;
       switch (row.dataset.pa) {
         case 'resume': this.closePanel(); this.cb.onResume(); break;
-        case 'save': this.cb.onSaveNow(); this.toast('World saved.', 'settlement'); break;
+        case 'save': this.cb.onSaveNow(); break;
         case 'settings': this.openSettingsPanel(true); break;
         case 'controls': this.openControlsPanel(); break;
         case 'export': this.cb.onExportWorld(); break;

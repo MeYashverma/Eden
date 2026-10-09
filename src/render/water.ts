@@ -106,7 +106,7 @@ const WATER_FRAG = /* glsl */ `
     vec3 body = mix(uShallowColor, uDeepColor, depthFactor);
 
     // Flow streaks in moving water
-    float streak = noise2(vec2(xz.x * 0.18 + t * vFlow * 0.5, xz.z * 0.18)) * vFlow * 0.18;
+    float streak = noise2(vec2(xz.x * 0.18 + t * vFlow * 0.5, xz.y * 0.18)) * vFlow * 0.18;
 
     // Shore foam: thin band where depth is small, animated
     float foamBand = 1.0 - smoothstep(0.02, 0.85, vDepth);

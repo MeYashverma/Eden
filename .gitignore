@@ -13,3 +13,4 @@ dist/
 
 # Test artifacts
 coverage/
+e2e-artifacts/

@@ -16,6 +16,16 @@ import { updateTerrainUniforms } from './terrainMaterial';
 const SUNRISE = 6;
 const SUNSET = 19.5;
 
+// Constant colours used by the per-frame atmosphere update (hoisted to avoid allocations).
+const K0 = new THREE.Color(0.68, 0.79, 0.88);
+const K1 = new THREE.Color(0.012, 0.02, 0.055);
+const K2 = new THREE.Color(0.04, 0.055, 0.1);
+const K3 = new THREE.Color(0.18, 0.22, 0.42);
+const K4 = new THREE.Color(0.92, 0.52, 0.28);
+const K5 = new THREE.Color(0.62, 0.66, 0.7);
+const K6 = new THREE.Color(1, 1, 1);
+const K7 = new THREE.Color(0.85, 0.9, 1);
+
 export class AtmosphereController {
   sunLight: THREE.DirectionalLight;
   moonLight: THREE.DirectionalLight;
@@ -36,6 +46,10 @@ export class AtmosphereController {
   private horizon = new THREE.Color();
   private sunColor = new THREE.Color();
   private tmp = new THREE.Color();
+  private scratchPos = new THREE.Vector3();
+  private windScratch = new THREE.Vector2();
+  private deepScratch = new THREE.Color();
+  private shallowScratch = new THREE.Color();
   private targetFog = new THREE.Color();
 
   constructor(
@@ -72,6 +86,21 @@ export class AtmosphereController {
     scene.add(sky.mesh);
   }
 
+  /**
+   * Remove everything this controller added to the scene and release its GPU
+   * resources. Must be called before a new AtmosphereController is created for
+   * a regenerated or reloaded world, otherwise lights and sky domes accumulate.
+   */
+  dispose(): void {
+    this.scene.remove(this.sunLight, this.sunLight.target, this.moonLight, this.hemiLight, this.sky.mesh);
+    if (this.scene.fog === this.fog) this.scene.fog = null;
+    this.sunLight.shadow.map?.dispose();
+    this.sky.mesh.geometry.dispose();
+    this.sky.material.dispose();
+    this.sunLight.dispose();
+    this.moonLight.dispose();
+  }
+
   setQuality(shadowMapSize: number, shadowRadius: number): void {
     this.sunLight.shadow.mapSize.set(shadowMapSize, shadowMapSize);
     this.sunLight.shadow.radius = shadowRadius;
@@ -105,12 +134,12 @@ export class AtmosphereController {
     const w = weather.state;
 
     // ---- sky colours -------------------------------------------------
-    const dayZenith = this.tmp.setRGB(0.22, 0.45, 0.78).clone();
-    const dayHorizon = new THREE.Color(0.68, 0.79, 0.88);
-    const nightZenith = new THREE.Color(0.012, 0.02, 0.055);
-    const nightHorizon = new THREE.Color(0.04, 0.055, 0.1);
-    const duskZenith = new THREE.Color(0.18, 0.22, 0.42);
-    const duskHorizon = new THREE.Color(0.92, 0.52, 0.28);
+    const dayZenith = this.tmp.setRGB(0.22, 0.45, 0.78);
+    const dayHorizon = K0;
+    const nightZenith = K1;
+    const nightHorizon = K2;
+    const duskZenith = K3;
+    const duskHorizon = K4;
 
     this.zenith.copy(nightZenith).lerp(duskZenith, twilight).lerp(dayZenith, dayAmount);
     this.horizon.copy(nightHorizon).lerp(duskHorizon, twilight).lerp(dayHorizon, dayAmount);
@@ -128,7 +157,7 @@ export class AtmosphereController {
 
     // Fog follows horizon, slightly brighter than sky at distance.
     this.targetFog.copy(this.horizon).lerp(this.zenith, 0.25);
-    if (w.fogAmount > 0.1) this.targetFog.lerp(new THREE.Color(0.62, 0.66, 0.7), w.fogAmount * 0.5);
+    if (w.fogAmount > 0.1) this.targetFog.lerp(K5, w.fogAmount * 0.5);
     this.fogColor.lerp(this.targetFog, clamp(dt * 1.4, 0, 1));
     (this.fog.color as THREE.Color).copy(this.fogColor);
     this.fog.density = lerp(this.fog.density, 0.00038 + w.fogAmount * 0.0016 + w.precipitation * 0.0004, clamp(dt, 0, 1));
@@ -139,21 +168,21 @@ export class AtmosphereController {
     this.sunLight.color.copy(this.sunColor);
     this.moonLight.intensity = (1 - dayAmount) * 0.22 * (1 - w.cloudCover * 0.6);
     this.hemiLight.intensity = 0.28 + dayAmount * 0.6 - w.cloudCover * 0.18;
-    this.hemiLight.color.copy(this.zenith).lerp(new THREE.Color(1, 1, 1), 0.35);
+    this.hemiLight.color.copy(this.zenith).lerp(K6, 0.35);
     this.hemiLight.groundColor.copy(this.horizon).multiplyScalar(0.55);
 
     // Lightning flash lifts ambient briefly.
     if (weather.lightningFlash > 0.01) {
       this.hemiLight.intensity += weather.lightningFlash * 2.2;
-      this.hemiLight.color.lerp(new THREE.Color(0.85, 0.9, 1), weather.lightningFlash * 0.8);
+      this.hemiLight.color.lerp(K7, weather.lightningFlash * 0.8);
     }
 
     // Sun/moon follow the player so shadows stay crisp near the camera.
-    const sunPos = this.sunDirection.clone().multiplyScalar(280).add(playerPos);
+    const sunPos = this.scratchPos.copy(this.sunDirection).multiplyScalar(280).add(playerPos);
     this.sunLight.position.copy(sunPos);
     this.sunLight.target.position.copy(playerPos);
     this.sunLight.target.updateMatrixWorld();
-    this.moonLight.position.copy(this.moonDirection.clone().multiplyScalar(280).add(playerPos));
+    this.moonLight.position.copy(this.scratchPos.copy(this.moonDirection).multiplyScalar(280).add(playerPos));
     this.moonLight.target.position.copy(playerPos);
 
     // ---- sky dome ------------------------------------------------------
@@ -175,15 +204,15 @@ export class AtmosphereController {
     updateWater(this.waterMat, {
       time: this.timeAccum,
       waveHeight: 0.18 + w.windStrength * 0.5,
-      wind: new THREE.Vector2(wind.x, wind.z),
+      wind: this.windScratch.set(wind.x, wind.z),
       sunDirection: this.sunDirection,
       sunColor: this.sunColor,
       skyColor: this.zenith,
       horizonColor: this.horizon,
       fogColor: this.fogColor,
       fogDensity: this.fog.density,
-      deepColor: new THREE.Color(0.04, 0.14, 0.28).multiplyScalar(0.4 + dayAmount * 0.6),
-      shallowColor: new THREE.Color(0.14, 0.4, 0.46).multiplyScalar(0.4 + dayAmount * 0.6),
+      deepColor: this.deepScratch.setRGB(0.04, 0.14, 0.28).multiplyScalar(0.4 + dayAmount * 0.6),
+      shallowColor: this.shallowScratch.setRGB(0.14, 0.4, 0.46).multiplyScalar(0.4 + dayAmount * 0.6),
     });
 
     // ---- terrain -------------------------------------------------------

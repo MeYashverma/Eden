@@ -2,6 +2,9 @@
  * EDEN entry point: boots the engine behind the main menu, wires the UI,
  * starts the frame loop and guards against fatal errors with a real error
  * surface (never a fake loading screen).
+ *
+ * Menu transitions are reported by the UI through `onMenuChange`, so this file
+ * no longer wraps UI methods.
  */
 
 import './ui/styles.css';
@@ -34,37 +37,17 @@ async function main(): Promise<void> {
 
     await engine.boot((pct, status) => ui.setBootProgress(pct, status));
 
-    // Live 3D menu background: world is already running behind the menu.
-    engine.setInMenu(true);
+    // The live 3D world runs behind the menu; the menu shows only if a save exists.
     ui.setMenuVisible(true, false);
     ui.finishBoot();
-
-    // Prepare the save list state for the Continue button.
-    const db = (engine as unknown as { db: { listSlots(): Promise<Array<{ id: string }>> } }).db;
-    const slots = await db.listSlots();
-    ui.setMenuVisible(true, slots.length > 0);
+    const saves = await engine.listSaves();
+    ui.setMenuVisible(true, saves.length > 0);
 
     engine.startLoop();
 
-    // When the user leaves the menu, hand control back to the game.
-    const origSetMenu = ui.setMenuVisible.bind(ui);
-    (ui as unknown as { setMenuVisible: (v: boolean, hasSave?: boolean) => void }).setMenuVisible = (
-      visible: boolean,
-      hasSave?: boolean,
-    ) => {
-      origSetMenu(visible, hasSave);
-      engine.setInMenu(visible);
-      if (!visible) {
-        engine.inputManager.uiFocused = false;
-        canvas.focus();
-      } else {
-        engine.inputManager.uiFocused = true;
-      }
-    };
-
-    // Clicking the canvas while playing acquires pointer lock.
+    // Clicking the world while playing acquires pointer lock.
     canvas.addEventListener('click', () => {
-      if (!engine.uiManager.isPanelOpen) {
+      if (!ui.isPanelOpen && !ui.isMenuVisible) {
         void engine.audioEngine.unlock();
         engine.inputManager.requestPointerLock();
       }

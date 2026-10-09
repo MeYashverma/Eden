@@ -94,3 +94,24 @@ the suite asserts everything that can be asserted headlessly (geometry edge
 equality, simulation state machines, serialization round-trips) and the
 acceptance scenario (follow a villager through a day) is scripted in the game
 itself (press `F`).
+
+## Regression tests (`tests/regressions.test.ts`)
+- Empty vegetation chunks are recorded (no per-sync regeneration); pruning and disposal.
+- Shared rock/bush/flower materials stay bounded across chunk rebuilds.
+- Foliage setting changes tree counts; render-distance setting changes streamed chunks.
+- Atmosphere disposal removes lights, sky dome and fog.
+- Export → import round-trip of an edited world restores each settlement exactly once.
+- Water vertices never sit above their hydrology cell level (no floating sheets).
+
+## Browser smoke test (`tests/e2e/smoke.e2e.mjs`)
+Drives the real game with headless Chrome via `puppeteer-core`:
+
+```bash
+npm run dev                       # in one terminal
+CHROME_PATH=/path/to/chrome EDEN_URL=http://localhost:5173/ npm run test:e2e
+```
+
+Without `CHROME_PATH` the script skips (exit 0). It covers boot, the menu, New World,
+regeneration (light count stable), pause-menu save commit, gallery rename persistence,
+Continue availability, leaving the menu, and fails on page errors or shader errors.
+Software GL makes frame timings meaningless; they are printed for information only.
