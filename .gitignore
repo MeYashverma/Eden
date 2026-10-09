@@ -1,0 +1,15 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.local
+
+# Logs & editor/OS noise
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+# Test artifacts
+coverage/
