@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta name="description" content="EDEN — a living, limitless world sandbox. Explore, build, survive, and watch a world of people and wildlife evolve in your browser." />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <title>EDEN — Living World Sandbox</title>
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="game-canvas"></canvas>
+
+      <!-- Boot / loading screen: reflects actual initialization progress -->
+      <div id="boot-screen" class="boot-screen">
+        <div class="boot-inner">
+          <div class="boot-logo">
+            <svg viewBox="0 0 64 64" class="boot-mark" aria-hidden="true">
+              <circle cx="32" cy="32" r="29" fill="none" stroke="currentColor" stroke-width="1.4" opacity="0.5"/>
+              <path d="M32 10 C 24 22, 18 28, 18 37 a 14 14 0 0 0 28 0 c 0 -9 -6 -15 -14 -27 z" fill="currentColor" opacity="0.9"/>
+              <path d="M32 22 v 26 M32 32 l -7 -6 M32 38 l 7 -6" stroke="#0c110d" stroke-width="1.6" fill="none" stroke-linecap="round"/>
+            </svg>
+            <h1>EDEN</h1>
+            <p class="boot-tagline">a living world, forged from a seed</p>
+          </div>
+          <div class="boot-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div class="boot-progress-fill" id="boot-progress-fill"></div>
+          </div>
+          <p class="boot-status" id="boot-status">Waking the world…</p>
+        </div>
+      </div>
+
+      <!-- Main menu -->
+      <div id="main-menu" class="main-menu hidden"></div>
+
+      <!-- In-game HUD + panels mount here -->
+      <div id="hud-root" class="hud-root hidden"></div>
+      <div id="panel-root" class="panel-root"></div>
+      <div id="toast-root" class="toast-root"></div>
+
+      <!-- Fatal error surface (only shown on unrecoverable failure) -->
+      <div id="fatal-error" class="fatal-error hidden">
+        <div class="fatal-inner">
+          <h2>The world faltered</h2>
+          <p id="fatal-message"></p>
+          <button id="fatal-reload" class="btn btn-primary">Reload</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
